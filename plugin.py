@@ -6,7 +6,7 @@
 # Author: Dan Hallgren
 #
 """
-<plugin key="tplinksmartplug" name="TP-Link Wi-Fi Smart Plug HS100/HS110" version="0.1.0">
+<plugin key="tplinksmartplug" name="TP-Link Wi-Fi Smart Plug HS100/HS110" version="1.0.0" author="Dan Hallgren / John_Matrix" wikilink="https://github.com/J0hnMatrix/domoticz-tplink-smartplug">
     <description>
         <h2>TP-Link Wi-Fi Smart Plug</h2>
         <ul style="list-sytel-type:square">
@@ -67,19 +67,20 @@ class TpLinkSmartPlugPlugin:
             Domoticz.Device(Name="switch", Unit=1, TypeName="Switch", Used=1).Create()
             Domoticz.Log("Tp-Link smart plug device created")
 
-        if (Parameters["Mode1"] == "HS110" or Parameters["Mode1"] == "HS110v2") and len(Devices) <= 1:
+        if (Parameters["Mode1"] in ("HS110", "HS110v2")) and len(Devices) <= 1:
             # Create more devices here
             Domoticz.Device(Name="(A)", Unit=2, Type=243, Subtype=23).Create()
             Domoticz.Device(Name="(V)", Unit=3, Type=243, Subtype=8).Create()
             Domoticz.Device(Name="(W)", Unit=4, Type=243, Subtype=29).Create()
 
         state = self.get_switch_state()
-        if state in 'off':
-            Devices[1].Update(0, '0')
-        elif state in 'on':
-            Devices[1].Update(1, '100')
-        else:
-            Devices[1].Update(1, '50')
+        if 1 in Devices:
+            if state == 'off':
+                Devices[1].Update(0, '0')
+            elif state == 'on':
+                Devices[1].Update(1, '100')
+            else:
+                Devices[1].Update(1, '50')
 
     def onStop(self):
         # Domoticz.Log("onStop called")
@@ -94,39 +95,40 @@ class TpLinkSmartPlugPlugin:
         pass
 
     def onCommand(self, unit, command, level, hue):
-        Domoticz.Log("onCommand called for Unit " +
-                     str(unit) + ": Parameter '" + str(command) + "', Level: " + str(level))
+        Domoticz.Log(f"onCommand called for Unit {unit}: Parameter '{command}', Level: {level}")
 
-        if command.lower() == 'on':
+        command_lower = command.lower()
+        if command_lower == 'on':
             cmd = {
                 "system": {
                     "set_relay_state": {"state": 1}
                 }
             }
             state = (1, '100')
-
-        elif command.lower() == 'off':
+        elif command_lower == 'off':
             cmd = {
                 "system": {
                     "set_relay_state": {"state": 0}
                 }
             }
             state = (0, '0')
+        else:
+            Domoticz.Log(f"Unknown command: {command}")
+            return
 
         result = self._send_json_cmd(json.dumps(cmd))
-        Domoticz.Debug("got response: {}".format(result))
+        Domoticz.Debug(f"got response: {result}")
 
         err_code = result.get('system', {}).get('set_relay_state', {}).get('err_code', 1)
 
-        if err_code == 0:
+        if err_code == 0 and 1 in Devices:
             Devices[1].Update(*state)
 
         # Reset counter so we trigger emeter poll next heartbeat
         self.heartbeatcounter = 0
 
     def onNotification(self, Name, Subject, Text, Status, Priority, Sound, ImageFile):
-        Domoticz.Log("Notification: " + Name + "," + Subject + "," + Text + "," + Status +
-                     "," + str(Priority) + "," + Sound + "," + ImageFile)
+        Domoticz.Log(f"Notification: {Name},{Subject},{Text},{Status},{Priority},{Sound},{ImageFile}")
 
     def onDisconnect(self, Connection):
         # Domoticz.Log("onDisconnect called")
@@ -136,12 +138,13 @@ class TpLinkSmartPlugPlugin:
         if self.heartbeatcounter % self.interval == 0:
             self.update_emeter_values()
         state = self.get_switch_state()
-        if state in 'off':
-            Devices[1].Update(0, '0')
-        elif state in 'on':
-            Devices[1].Update(1, '100')
-        else:
-            Devices[1].Update(1, '50')
+        if 1 in Devices:
+            if state == 'off':
+                Devices[1].Update(0, '0')
+            elif state == 'on':
+                Devices[1].Update(1, '100')
+            else:
+                Devices[1].Update(1, '50')
         self.heartbeatcounter += 1
 
     def _encrypt(self, data):
@@ -171,57 +174,60 @@ class TpLinkSmartPlugPlugin:
             data = self._encrypt(cmd)
             sock.send(data)
             data = sock.recv(1024)
-            Domoticz.Debug('data len: {}'.format(len(data)))
+            Domoticz.Debug(f"data len: {len(data)}")
             sock.close()
         except socket.error as e:
-            Domoticz.Log('send command error: {}'.format(str(e)))
-            raise
+            Domoticz.Log(f"send command error: {e}")
+            return ret
 
         try:
             json_resp = self._decrypt(data[4:])
             ret = json.loads(json_resp)
-        except (TypeError, JSONDecodeError) as e:
-            Domoticz.Log('decode error: {}'.format(str(e)))
-            Domoticz.Log('data: {}'.format(str(data)))
-            raise
+        except (TypeError, ValueError) as e:
+            Domoticz.Log(f"decode error: {e}")
+            Domoticz.Log(f"data: {data}")
+            return ret
 
         return ret
 
     def update_emeter_values(self):
-        if Parameters["Mode1"] == "HS110":
-            cmd = {
-                "emeter": {
-                    "get_realtime": {}
-                }
+        mode = Parameters["Mode1"]
+        if mode not in ("HS110", "HS110v2"):
+            return
+
+        cmd = {
+            "emeter": {
+                "get_realtime": {}
             }
+        }
 
-            result = self._send_json_cmd(json.dumps(cmd))
-            Domoticz.Debug("got response: {}".format(result))
+        result = self._send_json_cmd(json.dumps(cmd))
+        Domoticz.Debug(f"got response: {result}")
 
-            realtime_result = result.get('emeter', {}).get('get_realtime', {})
-            err_code = realtime_result.get('err_code', 1)
+        realtime_result = result.get('emeter', {}).get('get_realtime', {})
+        err_code = realtime_result.get('err_code', 1)
 
-            if err_code == 0:
-                Devices[2].Update(nValue=0, sValue=str(round(realtime_result['current'],2)))
-                Devices[3].Update(nValue=0, sValue=str(round(realtime_result['voltage'],2)))
-                Devices[4].Update(nValue=0, sValue=str(round(realtime_result['power'],2)) + ";" + str(realtime_result['total']*1000))
-        if Parameters["Mode1"] == "HS110v2":
-            cmd = {
-                "emeter": {
-                    "get_realtime": {}
-                }
-            }
+        if err_code == 0:
+            try:
+                if mode == "HS110":
+                    current = round(realtime_result['current'], 2)
+                    voltage = round(realtime_result['voltage'], 2)
+                    power = round(realtime_result['power'], 2)
+                    total = realtime_result['total'] * 1000
+                else:  # HS110v2
+                    current = round(realtime_result['current_ma'] / 1000, 2)
+                    voltage = round(realtime_result['voltage_mv'] / 1000, 2)
+                    power = round(realtime_result['power_mw'] / 1000, 2)
+                    total = realtime_result['total_wh']
 
-            result = self._send_json_cmd(json.dumps(cmd))
-            Domoticz.Debug("got response: {}".format(result))
-
-            realtime_result = result.get('emeter', {}).get('get_realtime', {})
-            err_code = realtime_result.get('err_code', 1)
-
-            if err_code == 0:
-                Devices[2].Update(nValue=0, sValue=str(round(realtime_result['current_ma']/1000,2)))
-                Devices[3].Update(nValue=0, sValue=str(round(realtime_result['voltage_mv']/1000,2)))
-                Devices[4].Update(nValue=0, sValue=str(round(realtime_result['power_mw']/1000,2)) + ";" + str(realtime_result['total_wh']))
+                if 2 in Devices:
+                    Devices[2].Update(nValue=0, sValue=str(current))
+                if 3 in Devices:
+                    Devices[3].Update(nValue=0, sValue=str(voltage))
+                if 4 in Devices:
+                    Devices[4].Update(nValue=0, sValue=f"{power};{total}")
+            except (KeyError, TypeError) as e:
+                Domoticz.Log(f"Error parsing emeter response: {e}")
 
 
 #power = round(float(json_data['emeter']['get_realtime']['power_mw']) / 1000,2)
@@ -234,14 +240,18 @@ class TpLinkSmartPlugPlugin:
             }
         }
         result = self._send_json_cmd(json.dumps(cmd))
-        print(result)
+        Domoticz.Debug(f"sysinfo response: {result}")
 
         err_code = result.get('system', {}).get('get_sysinfo', {}).get('err_code', 1)
 
+        state = 2  # 'unknown'
         if err_code == 0:
-            state = result['system']['get_sysinfo']['relay_state']
-        else:
-            state = 2
+            try:
+                state = result['system']['get_sysinfo']['relay_state']
+                if state not in (0, 1):
+                    state = 2
+            except (KeyError, TypeError):
+                state = 2
 
         return STATES[state]
 
@@ -294,13 +304,13 @@ def onHeartbeat():
 def DumpConfigToLog():
     for x in Parameters:
         if Parameters[x] != "":
-            Domoticz.Debug("'" + x + "':'" + str(Parameters[x]) + "'")
-    Domoticz.Debug("Device count: " + str(len(Devices)))
+            Domoticz.Debug(f"'{x}':'{Parameters[x]}'")
+    Domoticz.Debug(f"Device count: {len(Devices)}")
     for x in Devices:
-        Domoticz.Debug("Device:           " + str(x) + " - " + str(Devices[x]))
-        Domoticz.Debug("Device ID:       '" + str(Devices[x].ID) + "'")
-        Domoticz.Debug("Device Name:     '" + Devices[x].Name + "'")
-        Domoticz.Debug("Device nValue:    " + str(Devices[x].nValue))
-        Domoticz.Debug("Device sValue:   '" + Devices[x].sValue + "'")
-        Domoticz.Debug("Device LastLevel: " + str(Devices[x].LastLevel))
+        Domoticz.Debug(f"Device:           {x} - {Devices[x]}")
+        Domoticz.Debug(f"Device ID:       '{Devices[x].ID}'")
+        Domoticz.Debug(f"Device Name:     '{Devices[x].Name}'")
+        Domoticz.Debug(f"Device nValue:    {Devices[x].nValue}")
+        Domoticz.Debug(f"Device sValue:   '{Devices[x].sValue}'")
+        Domoticz.Debug(f"Device LastLevel: {Devices[x].LastLevel}")
     return
